@@ -472,6 +472,7 @@ class ContainerController(BaseStorageServer):
     @timing_stats(sample_rate=0.1)
     def HEAD(self, req):
         """Handle HTTP HEAD request."""
+        #import rpdb; rpdb.set_trace()
         drive, part, account, container, obj = split_and_validate_path(
             req, 4, 5, True)
         out_content_type = get_listing_content_type(req)

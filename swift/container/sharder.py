@@ -641,12 +641,17 @@ class ContainerSharder(ContainerReplicator):
             self.shard_brokers = dict()
             self.shard_cleanups = dict()
 
+            #BLM
+            #if broker.container == 'sillycontainer':
+            #    import rpdb; rpdb.set_trace()
+
             # now we need to see if we need to spend any effort trying to shard,
             # if it's already sharded then we want to finish with the audit and
             # check for misplaced objects.
             already_sharded = len(broker.get_pivot_points()) > 0
 
             if not already_sharded:
+                #import rpdb; rpdb.set_trace()
                 # Sharding is 2 phase
                 # If a pivot point is defined, we shard on it.. if it isn't
                 # then we see if we need to find a pivot point and set it for
@@ -956,6 +961,15 @@ class ContainerSharder(ContainerReplicator):
                          broker.account, broker.container,
                          new_acct, new_left_cont, new_acct, new_right_cont,
                          pivot)
+
+        if not is_root:
+            #BLM
+            self.logger.info(_('Removing unused inner container %s'), broker.container)
+            try:
+                self.swift.delete_container(broker.account, broker.container)
+            except:
+                pass
+
 
     def _push_pivot_point_to_container(self, pivot, weight, root_account,
                                        root_container, pivot_point,

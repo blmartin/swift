@@ -3661,6 +3661,7 @@ def get_md5_socket():
 
     return md5_sockfd
 
+
 class PivotTree(object):
     def __init__(self, root=None, disable_timestamps=False):
         self._disable_timestamps = disable_timestamps
@@ -3741,6 +3742,26 @@ class PivotTree(object):
             node = node.parent
 
         return gt, lt
+
+    #BLM
+    def __str__(self):
+        if not self._root:
+            return ''
+        #from pprint import pformat as pf
+        #return pf(self._root._get_json())
+        return self._walktree(self._root)
+
+    def _walktree(self, node, s='', depth=0):
+        if node is None:
+            return s
+        lead = '  ' * depth
+        s += node.key + '\n'
+        if node._left:
+            s = self._walktree(node._left, s + lead + 'L: ', depth + 1)
+        if node._right:
+            s = self._walktree(node._right, s + lead + 'R: ', depth + 1)
+        return s
+
 
 class PivotNode(object):
     def __init__(self, key, timestamp=None, parent=None):
@@ -3882,6 +3903,16 @@ class PivotNode(object):
 
     def __getitem__(self, item):
         return self.get(item)
+
+    #BLM
+    def _get_json(self):
+        left = self._left._get_json() if self._left is not None else None
+        right = self._right._get_json() if self._right is not None else None
+        return {
+            'key': self._key,
+            'left': left,
+            'right': right
+        }
 
 
 def pivot_to_pivot_container(account, container, pivot_point, weight):

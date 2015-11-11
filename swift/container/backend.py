@@ -1017,6 +1017,52 @@ class ContainerBroker(DatabaseBroker):
                     self.create_pivot_points_table(conn)
             return []
 
+    def get_pivot_table(self):
+        class PrettyTable(object):
+            def __init__(self, row_headers, separator=' | '):
+                self.table = []
+                self.headers = row_headers
+                self.max_row_size = [len(x) for x in row_headers]
+                self.separator = separator
+        
+            def add_row(self, row):
+                if len(row) != len(self.headers):
+                    raise ValueError('rows must be the same size as the given table headers (%s != %s)' %
+                        (len(row), len(self.headers)))
+                self.table.append(row)
+                for i in range(len(row)):
+                    self.max_row_size[i] = max(len('%s' % row[i]), self.max_row_size[i])
+        
+            def get_string(self, sortby=None):
+                if sortby and sortby in self.headers:
+                    sortby_index = self.headers.index(sortby)
+                    self.table.sort(key=lambda x: x[sortby_index])
+                formatted_table = [self.headers] + self.table
+                table_string = ''
+                for row in formatted_table:
+                    current_row = []
+                    for i in range(len(row)):
+                        current_row.append('{{0: <{}}}'.format(self.max_row_size[i]).format(row[i]))
+                    table_string += self.separator.join(current_row) + '\n'
+                return table_string.rstrip()
+    
+            def __str__(self):
+                return self.get_string()
+
+        x = [[]]
+        with self.get() as conn:
+            for row in conn.execute('SELECT * FROM pivot_points'):
+                x[0] = row.keys()
+                x.append([])
+                for column in x[0]:
+                    x[-1].append(row[column])
+    
+        t = PrettyTable(x[0])
+        for row in x[1:]:
+            t.add_row(row)
+        return t.get_string()
+
+
     def pivot_nodes_to_items(self, nodes):
         result = list()
         for item in nodes:
