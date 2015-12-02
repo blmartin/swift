@@ -953,6 +953,24 @@ class ContainerSharder(ContainerReplicator):
                          new_acct, new_left_cont, new_acct, new_right_cont,
                          pivot)
 
+        # We can remove branch containers as they serve no purpose now.
+        # (they hold no objects and the root container keeps refences to each
+        # leaf node)
+        if not is_root:
+            self.logger.info(_('Removing unused branch container %s'),
+                             broker.container)
+            try:
+                self.swift.delete_container(broker.account, broker.container)
+            except Exception as exception:
+                # FIXME (blmartin):
+                # if we ever get into this state, we need to be sure to
+                # remove the container later. The container will not hurt
+                # anything by staying around (as it is empty) but it is
+                # ugly. Unsure of best way to clean up right now
+                self.logger.warn(_('Could not delete branch container %s/%s'
+                                   ' due to %s. Ignoring for now'),
+                                 exception, broker.account, broker.container)
+
     def _push_pivot_point_to_container(self, pivot, weight, root_account,
                                        root_container, pivot_point,
                                        storage_policy_index):
