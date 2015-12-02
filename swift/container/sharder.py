@@ -967,7 +967,7 @@ class ContainerSharder(ContainerReplicator):
                 # remove the container later. The container will not hurt
                 # anything by staying around (as it is empty) but it is
                 # ugly. Unsure of best way to clean up right now
-                self.logger.warn(_('Could not delete branch container %s/%s'
+                self.logger.warning(_('Could not delete branch container %s/%s'
                                    ' due to %s. Ignoring for now'),
                                  exception, broker.account, broker.container)
 
