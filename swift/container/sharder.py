@@ -512,7 +512,6 @@ class ContainerSharder(ContainerReplicator):
             node, _weight = tree.get(pivot, leaf=False)
             is_branch = bool(node)
         if is_branch or node.left or node.right:
-            import rpdb; rpdb.set_trace()
             # This is a container that has already been sharded / branch
             # container. It should already have been deleted or is in the
             # process of being deleted. We can skip it as it will take
