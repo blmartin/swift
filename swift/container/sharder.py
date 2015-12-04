@@ -478,7 +478,7 @@ class ContainerSharder(ContainerReplicator):
                                root_container=None):
 
         self.logger.info(_('Auditing %s/%s'), broker.account, broker.container)
-        continue_with_container = True
+
         if not root_account or not root_container:
             root_account, root_container = \
                 ContainerSharder.get_shard_root_path(broker)
@@ -487,88 +487,86 @@ class ContainerSharder(ContainerReplicator):
             # This is the root container, and therefore the tome of knowledge,
             # So we must assume it's correct (though I may need to this about
             # this some more).
-            return continue_with_container
+            return True
 
-        root_ok = parent_ok = False
-        parent = None
         # Get the root view of the world.
         tree = self._get_pivot_tree(root_account, root_container, newest=True)
+
         if tree is None:
-            # failed to get the root tree. Error out for now.. we may need to
+            # Failed to get the root tree. Error out for now.. we may need to
             # quarantine the container.
-            self.logger.warning(_("Failed to get a pivot tree from root "
-                                  "container %s/%s, it may not exist."),
+            self.logger.warning(_("Audit: Failed to get a pivot tree from "
+                                  "root container %s/%s, it may not exist."),
                                 root_account, root_container)
             return False
-        node, _weight = tree.get(pivot, leaf=False)
-        if node:
-            root_ok = True
-            # the node exists so now we need to find the parent (if there
-            # is one)
-            if node.parent is None:
-                # Parent is root
-                parent_ok = True
-            else:
-                if node.parent.left == node:
-                    weight = -1
-                else:
-                    weight = 1
-                parent = (node.parent.key, weight)
 
-        if parent:
-            # We need to check the pivot_nodes.
-            acct, cont = pivot_to_pivot_container(root_account, root_container,
-                                                  *parent)
+        is_leaf = is_branch = False
+
+        # Try to get this node from the root shard tree
+        # First, assume it is correctly a leaf node
+        node, _weight = tree.get(pivot)
+        is_leaf = bool(node)
+
+        if not is_leaf:
+            # Maybe our node is a branch node?
+            node, _weight = tree.get(pivot, leaf=False)
+            is_branch = bool(node)
+        if is_branch or node.left or node.right:
+            import rpdb; rpdb.set_trace()
+            # This is a container that has already been sharded / branch
+            # container. It should already have been deleted or is in the
+            # process of being deleted. We can skip it as it will take
+            # take care of itself with time
+            self.logger.warning(_("Audit: Shard container '%s/%s' is not a "
+                                  "leaf container, Ignoring for now"),
+                                broker.account, broker.container)
+            return False
+
+        if not is_leaf and not is_branch:
+            # if we have gotten here, the node is not in the root's tree
+            # Probably the node was sharded recently and the data has not
+            # propogated yet OR we have an odd state.
+
+            # Try to get the parent container, this will work if the
+            # parent container has not been reclaimed yet even if
+            # it is 'deleted'
+            weight = -1 if node.parent.left == node else 1
+            args = (root_account, root_container, node.parent.key, weight)
+            acct, cont = pivot_to_pivot_container(*args)
             parent_tree = self._get_pivot_tree(acct, cont, newest=True)
-            if parent_tree:
-                node = tree.get(pivot)
-                if node:
-                    parent_ok = True
 
-        if parent_ok and root_ok:
-            # short circuit
-            return continue_with_container
+            node = parent_tree.get(pivot) if parent_tree else None
 
-        if not parent_ok and not root_ok:
-            # We need to quarantine
-            # We may actually never get here.. this needs to be re-thought.
-            self.logger.warning(_("Shard container '%s/%s' is being "
-                                  "quarantined, neither the root container "
-                                  "'%s/%s' or it's parent knows of it's "
-                                  "existance"), broker.account,
-                                broker.container, root_account, root_container)
-            # TODO quarantine the container
-            continue_with_container = False
-            return continue_with_container
-
-        timestamp = Timestamp(time.time()).internal
-        # update root container
-        tree.add(pivot)
-        level = tree.get_level(pivot)
-        pivot_point = [(pivot, timestamp, level)]
-        if not parent_ok:
-            # Update parent
-            if parent:
-                acct, cont = pivot_to_pivot_container(root_account,
-                                                      root_container,
-                                                      *parent)
-                self.logger.info(_("Shard container '%s/%s' is missing from "
-                                   "its parent container '%s/%s', "
+            if node:
+                # We found the node's parent container and can correctly
+                # update the root container with that information!
+                self.logger.info(_("Audit: Shard container '%s/%s' is missing "
+                                   "from the root container '%s/%s', "
                                    "correcting."),
-                                 broker.account, broker.container, acct, cont)
+                                 broker.account, broker.container,
+                                 root_account, root_container)
                 self._push_pivot_point_to_container(
-                    parent[0], parent[1], root_account, root_container,
+                    None, None, root_account, root_container,
                     pivot_point, broker.storage_policy_index)
-        elif not root_ok:
-            # update root container
-            self.logger.info(_("Shard container '%s/%s' is missing from "
-                               "the root container '%s/%s', correcting."),
-                             broker.account, broker.container,
-                             root_account, root_container)
-            self._push_pivot_point_to_container(None, None, root_account,
-                                                root_container, pivot_point,
-                                                broker.storage_policy_index)
-        return continue_with_container
+                # Now we just wait to be returned True!
+                
+            else:
+                # The parent container has already been reclaimed
+                # This means that this container has been around for some time
+                # We should quarantine it becuase this is an odd state
+                self.logger.warning(_("Audit: Shard container '%s/%s' is "
+                                      "being quarantined, it's parent has "
+                                      "been reclaimed and the root container "
+                                      "'%s/%s' does not have record of it"),
+                                    broker.account, broker.container,
+                                    root_account, root_container)
+                # TODO quarantine the container
+                return False
+
+        # Everything seems to be in order
+        self.logger.info(_('Audit of %s/%s finished, everything in order'),
+                         broker.account, broker.container)
+        return True
 
     def _one_shard_pass(self, reported):
         """
