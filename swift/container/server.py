@@ -607,6 +607,7 @@ class ContainerController(BaseStorageServer):
         prefix = get_param(req, 'prefix')
         delimiter = get_param(req, 'delimiter')
         nodes = get_param(req, 'nodes')
+        deleted_okay = config_true_value(get_param(req, 'deleted_okay'))
         if delimiter and (len(delimiter) > 1 or ord(delimiter) > 254):
             # delimiters can be made more flexible later
             return HTTPPreconditionFailed(body='Bad delimiter')
@@ -629,7 +630,7 @@ class ContainerController(BaseStorageServer):
                                             stale_reads_ok=True)
         info, is_deleted = broker.get_info_is_deleted()
         resp_headers = gen_resp_headers(info, is_deleted=is_deleted)
-        if is_deleted:
+        if is_deleted and not deleted_okay:
             return HTTPNotFound(request=req, headers=resp_headers)
         if nodes and nodes.lower() == "pivot":
             container_list = broker.get_pivot_points(padded=True)

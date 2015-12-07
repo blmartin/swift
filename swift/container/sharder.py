@@ -171,9 +171,10 @@ class ContainerSharder(ContainerReplicator):
                 self._local_device_ids.add(node['id'])
         return results
 
-    def _get_pivot_tree(self, account, container, newest=False):
+    def _get_pivot_tree(self, account, container, newest=False deleted=False):
         path = self.swift.make_path(account, container) + \
-            '?nodes=pivot&format=json'
+            '?nodes=pivot&format=json' + \
+            ('&deleted_okay=yes' if deleted else '')
         headers = dict()
         if newest:
             headers['X-Newest'] = 'true'
@@ -504,14 +505,25 @@ class ContainerSharder(ContainerReplicator):
 
         # Try to get this node from the root shard tree
         # First, assume it is correctly a leaf node
-        node, _weight = tree.get(pivot)
-        is_leaf = bool(node)
+        # Note: A node is a leaf IFF the pivot exists in the tree and its
+        # child on the side corresponding the this container is None
+        node, weight = tree.get(pivot)
+        is_leaf = (bool(node) and weight == 0 and (
+                  ('.le.' in broker.container and node.left is None) or
+                  ('.gt.' in broker.container and node.right is None)))
 
-        if not is_leaf:
-            # Maybe our node is a branch node?
-            node, _weight = tree.get(pivot, leaf=False)
-            is_branch = bool(node)
-        if is_branch or node.left or node.right:
+        if is_leaf:
+            # This node is consistent so lets continue
+            self.logger.info(_('Audit of %s/%s finished, everything in order'),
+                             broker.account, broker.container)
+            return True
+
+        # Maybe our node is a branch node?
+        node, _weight = tree.get(pivot, leaf=False)
+
+        is_branch = bool(node) and weight == 0
+
+        if is_branch:
             # This is a container that has already been sharded / branch
             # container. It should already have been deleted or is in the
             # process of being deleted. We can skip it as it will take
@@ -519,53 +531,68 @@ class ContainerSharder(ContainerReplicator):
             self.logger.warning(_("Audit: Shard container '%s/%s' is not a "
                                   "leaf container, Ignoring for now"),
                                 broker.account, broker.container)
+            return False        
+
+        # if we have gotten here, the node is not in the root's tree
+        # Probably the node was sharded recently and the data has not
+        # propogated yet OR we have an odd state.
+
+        # Try to get the parent container, this will work if the
+        # parent container has not been reclaimed yet even if
+        # it is 'deleted'
+        parent_container_name = \
+            broker.metadata.get('X-Container-Sysmeta-Shard-Parent')[0]
+        shard_container_name = \
+            broker.metadata.get('X-Container-Sysmeta-Shard-Container')[0]
+
+        # in case our parent is the root container
+        parent_account_name = (broker.account
+            if broker.account == shard_container_name
+            else root_account)
+
+        parent_tree = self._get_pivot_tree(parent_account_name,
+                                           parent_container_name,
+                                           newest=True, deleted=True)
+        parent_node = parent_tree.get(pivot) if parent_tree else None
+
+        if parent_node:
+            # We found the node's parent container and can correctly
+            # update the root container with that information!
+            self.logger.info(_("Audit: Shard container '%s/%s' is missing "
+                               "from the root container '%s/%s', "
+                               "correcting."),
+                             broker.account, broker.container,
+                             root_account, root_container)
+            timestamp = Timestamp(time.time()).internal
+            tree.add(pivot)
+            level = tree.get_level(pivot)
+            pivot_point = [(pivot, timestamp, level)]
+
+            self._push_pivot_point_to_container(None, None, root_account, 
+                                                root_container, pivot_point,
+                                                broker.storage_policy_index)
+            return True
+
+        elif node:
+            # The parent container has already been reclaimed
+            # This means that this container has been around for some time
+            # We should quarantine it becuase this is an odd state
+            self.logger.warning(_("Audit: Shard container '%s/%s' is "
+                                  "being quarantined, its parent has "
+                                  "been reclaimed and the root container "
+                                  "'%s/%s' does not have record of it"),
+                                broker.account, broker.container,
+                                root_account, root_container)
+            # TODO: quarantine the container
             return False
 
-        if not is_leaf and not is_branch:
-            # if we have gotten here, the node is not in the root's tree
-            # Probably the node was sharded recently and the data has not
-            # propogated yet OR we have an odd state.
-
-            # Try to get the parent container, this will work if the
-            # parent container has not been reclaimed yet even if
-            # it is 'deleted'
-            weight = -1 if node.parent.left == node else 1
-            args = (root_account, root_container, node.parent.key, weight)
-            acct, cont = pivot_to_pivot_container(*args)
-            parent_tree = self._get_pivot_tree(acct, cont, newest=True)
-
-            node = parent_tree.get(pivot) if parent_tree else None
-
-            if node:
-                # We found the node's parent container and can correctly
-                # update the root container with that information!
-                self.logger.info(_("Audit: Shard container '%s/%s' is missing "
-                                   "from the root container '%s/%s', "
-                                   "correcting."),
-                                 broker.account, broker.container,
-                                 root_account, root_container)
-                self._push_pivot_point_to_container(
-                    None, None, root_account, root_container,
-                    pivot_point, broker.storage_policy_index)
-                # Now we just wait to be returned True!
-                
-            else:
-                # The parent container has already been reclaimed
-                # This means that this container has been around for some time
-                # We should quarantine it becuase this is an odd state
-                self.logger.warning(_("Audit: Shard container '%s/%s' is "
-                                      "being quarantined, it's parent has "
-                                      "been reclaimed and the root container "
-                                      "'%s/%s' does not have record of it"),
-                                    broker.account, broker.container,
-                                    root_account, root_container)
-                # TODO quarantine the container
-                return False
-
-        # Everything seems to be in order
-        self.logger.info(_('Audit of %s/%s finished, everything in order'),
-                         broker.account, broker.container)
-        return True
+        # If we are here, we are in an unknown, unpredicted state
+        # best just to quarantine this container
+        self.logger.warning(_("Audit: Shard container '%s/%s' is being "
+                              "quarantined, it is in an unknown state."),
+                            broker.account, broker.container)
+        # TODO: quarantine the container
+        return False
 
     def _one_shard_pass(self, reported):
         """
@@ -822,7 +849,7 @@ class ContainerSharder(ContainerReplicator):
                              broker.container)
 
         # Now that we have quorum we can split.
-        self.logger.info(_('sharding at from container %s on pivot %s'),
+        self.logger.info(_('sharding container %s on pivot %s'),
                          broker.container, pivot)
 
         new_acct, new_left_cont = pivot_to_pivot_container(
@@ -850,8 +877,11 @@ class ContainerSharder(ContainerReplicator):
         # Make sure the account exists by running a container PUT
         try:
             policy = POLICIES.get_by_index(broker.storage_policy_index)
-            headers = {'X-Storage-Policy': policy.name}
+            headers = {'X-Storage-Policy': policy.name,
+                       'X-Container-Sysmeta-Shard-Parent': broker.container}
             self.swift.create_container(new_acct, new_left_cont,
+                                        headers=headers)
+            self.swift.create_container(new_acct, new_right_cont,
                                         headers=headers)
         except internal_client.UnexpectedResponse as ex:
             self.logger.warning(_('Failed to put container: %s'),
