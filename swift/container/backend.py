@@ -493,7 +493,7 @@ class ContainerBroker(DatabaseBroker):
             self.account = data['account']
             self.container = data['container']
 
-            if not self.get_pivot_points(connection=conn):
+            if not self.get_pivot_ranges(connection=conn):
                 # This container can have objects, so find the current pivot
                 # point.
                 data['pivot_point'] = \
